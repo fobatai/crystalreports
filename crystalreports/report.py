@@ -268,10 +268,15 @@ class CrystalReport:
     # ------------------------------------------------------------------
 
     def move_object(self, handle: int, left: int, top: int,
-                    right: int, bottom: int) -> None:
-        """Move/resize a report object by setting its bounds (twips)."""
+                    right: int, bottom: int,
+                    section_code: int = 0) -> None:
+        """Move/resize a report object by setting its bounds (twips).
+
+        For Box and Line objects, pass *section_code* so the section
+        height is auto-increased when the object bottom would exceed it.
+        """
         self._require_sdk()
-        self._job.move_object(handle, left, top, right, bottom)
+        self._job.move_object(handle, left, top, right, bottom, section_code)
 
     def set_field_font(self, handle: int, face_name: str = "",
                        point_size: int = 0, bold: Optional[bool] = None,

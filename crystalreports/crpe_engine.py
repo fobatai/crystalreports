@@ -13,6 +13,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import os
+import struct as _struct
 from pathlib import Path
 from typing import Optional, Union
 
@@ -361,6 +362,18 @@ def _setup_prototypes(dll: ctypes.WinDLL) -> None:
     ]
     dll.PESetSectionFormat.restype = ctypes.c_bool
 
+    # Box object info (move/resize boxes)
+    dll.PEGetBoxObjectInfo.argtypes = [PE_HANDLE, ctypes.c_int, ctypes.c_void_p]
+    dll.PEGetBoxObjectInfo.restype = ctypes.c_bool
+    dll.PESetBoxObjectInfo.argtypes = [PE_HANDLE, ctypes.c_int, ctypes.c_void_p]
+    dll.PESetBoxObjectInfo.restype = ctypes.c_bool
+
+    # Line object info (move/resize lines)
+    dll.PEGetLineObjectInfo.argtypes = [PE_HANDLE, ctypes.c_int, ctypes.c_void_p]
+    dll.PEGetLineObjectInfo.restype = ctypes.c_bool
+    dll.PESetLineObjectInfo.argtypes = [PE_HANDLE, ctypes.c_int, ctypes.c_void_p]
+    dll.PESetLineObjectInfo.restype = ctypes.c_bool
+
     # Delete object
     dll.PEDeleteObject.argtypes = [PE_HANDLE, ctypes.c_int]
     dll.PEDeleteObject.restype = ctypes.c_bool
@@ -640,18 +653,140 @@ class CrpeJob:
     # -- Object modification --
 
     def move_object(self, handle: int, left: int, top: int,
-                    right: int, bottom: int) -> None:
-        """Move/resize an object by setting its bounds (in twips)."""
+                    right: int, bottom: int,
+                    section_code: int = 0) -> None:
+        """Move/resize an object by setting its bounds (in twips).
+
+        Automatically detects the object type and uses the correct API:
+        - Box objects use ``PESetBoxObjectInfo``
+        - Line objects use ``PESetLineObjectInfo``
+        - Other objects use ``PESetObjectInfo``
+
+        Parameters
+        ----------
+        section_code : int, optional
+            Required for Box/Line objects to auto-increase section height
+            when the object bottom would exceed it.
+        """
+        # Read object info to determine type
         info = PEObjectInfo()
         info.StructSize = ctypes.sizeof(PEObjectInfo)
         ok = self._dll.PEGetObjectInfo(self._handle, handle, ctypes.byref(info))
         _check(self._dll, self._handle, ok, f"GetObjectInfo({handle})")
-        info.Left = left
-        info.Top = top
-        info.Right = right
-        info.Bottom = bottom
-        ok = self._dll.PESetObjectInfo(self._handle, handle, ctypes.byref(info))
-        _check(self._dll, self._handle, ok, f"SetObjectInfo({handle})")
+
+        obj_type = info.ObjectType
+        if obj_type == 4:  # Box
+            self._move_box(handle, left, top, right, bottom, section_code)
+        elif obj_type == 3:  # Line
+            self._move_line(handle, left, top, right, bottom, section_code)
+        else:
+            info.Left = left
+            info.Top = top
+            info.Right = right
+            info.Bottom = bottom
+            ok = self._dll.PESetObjectInfo(
+                self._handle, handle, ctypes.byref(info),
+            )
+            _check(self._dll, self._handle, ok, f"SetObjectInfo({handle})")
+
+    def _ensure_section_height(self, section_code: int, needed: int) -> None:
+        """Increase section height if *needed* exceeds current height."""
+        if section_code <= 0:
+            return
+        height = ctypes.c_long(0)
+        ok = self._dll.PEGetSectionHeight(
+            self._handle, section_code, ctypes.byref(height),
+        )
+        if ok and needed > height.value:
+            self._dll.PESetSectionHeight(
+                self._handle, section_code, needed + 20,
+            )
+
+    @staticmethod
+    def _set_long_at(buf, offset: int, value: int) -> None:
+        """Write a signed 32-bit int into *buf* at *offset*."""
+        b = value.to_bytes(4, "little", signed=True)
+        for i in range(4):
+            buf[offset + i] = b[i]
+
+    def _move_box(self, handle: int, left: int, top: int,
+                  right: int, bottom: int, section_code: int) -> None:
+        """Move/resize a Box using PESetBoxObjectInfo.
+
+        BoxObjectInfo (44 bytes) stores coordinates as:
+          offset 4:  left
+          offset 8:  top
+          offset 16: left + right  (x-extent sum)
+          offset 20: top + bottom  (y-extent sum, clamped to section height)
+
+        Cross-section boxes (spanning multiple sub-sections) have a
+        different encoding for offset 12/20.  For these boxes, only
+        left and top can be reliably changed; right and bottom are
+        preserved as-is because PEObjectInfo does not propagate x-sum
+        changes for cross-section boxes.
+        """
+        buf = (ctypes.c_byte * 44)()
+        ctypes.cast(buf, ctypes.POINTER(ctypes.c_ushort))[0] = 44
+        ok = self._dll.PEGetBoxObjectInfo(self._handle, handle, buf)
+        _check(self._dll, self._handle, ok, f"GetBoxObjectInfo({handle})")
+
+        # Detect cross-section box via offset 12
+        is_cross = False
+        if section_code > 0:
+            off12 = _struct.unpack_from("<i", bytes(buf), 12)[0]
+            is_cross = off12 != section_code + 65536
+
+        if is_cross:
+            # Cross-section: only left/top propagate to PEObjectInfo
+            self._set_long_at(buf, 4, left)
+            self._set_long_at(buf, 8, top)
+            # Keep offset 16 (x-sum) and 20 (cross-section bottom) unchanged
+        else:
+            self._ensure_section_height(section_code, top + bottom)
+            self._set_long_at(buf, 4, left)
+            self._set_long_at(buf, 8, top)
+            self._set_long_at(buf, 16, left + right)
+            self._set_long_at(buf, 20, top + bottom)
+
+        ok = self._dll.PESetBoxObjectInfo(self._handle, handle, buf)
+        _check(self._dll, self._handle, ok, f"SetBoxObjectInfo({handle})")
+
+    def _move_line(self, handle: int, left: int, top: int,
+                   right: int, bottom: int, section_code: int) -> None:
+        """Move/resize a Line using PESetLineObjectInfo.
+
+        LineObjectInfo (36 bytes) stores coordinates as:
+          offset 8:  left
+          offset 12: top
+          offset 20: left + right  (x-extent sum)
+          offset 24: top + bottom  (y-extent sum, clamped to section height)
+
+        Cross-section lines have offset 4 != section_code + 65536;
+        for those only left and top are reliably modified.
+        """
+        buf = (ctypes.c_byte * 36)()
+        ctypes.cast(buf, ctypes.POINTER(ctypes.c_ushort))[0] = 36
+        ok = self._dll.PEGetLineObjectInfo(self._handle, handle, buf)
+        _check(self._dll, self._handle, ok, f"GetLineObjectInfo({handle})")
+
+        # Detect cross-section line via offset 4
+        is_cross = False
+        if section_code > 0:
+            off4 = _struct.unpack_from("<i", bytes(buf), 4)[0]
+            is_cross = off4 != section_code + 65536
+
+        if is_cross:
+            self._set_long_at(buf, 8, left)
+            self._set_long_at(buf, 12, top)
+        else:
+            self._ensure_section_height(section_code, top + bottom)
+            self._set_long_at(buf, 8, left)
+            self._set_long_at(buf, 12, top)
+            self._set_long_at(buf, 20, left + right)
+            self._set_long_at(buf, 24, top + bottom)
+
+        ok = self._dll.PESetLineObjectInfo(self._handle, handle, buf)
+        _check(self._dll, self._handle, ok, f"SetLineObjectInfo({handle})")
 
     def set_field_font(self, handle: int, face_name: str = "",
                        point_size: int = 0, bold: Optional[bool] = None,

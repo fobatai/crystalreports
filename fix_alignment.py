@@ -88,6 +88,7 @@ with CrystalReport(INPUT) as rpt:
                                 obj.handle,
                                 obj.left, target_top,
                                 obj.right, new_bottom,
+                                section_code=code,
                             )
                             fixes.append(
                                 f"  {label:8s} {obj.name:35s} "
@@ -102,6 +103,128 @@ with CrystalReport(INPUT) as rpt:
     for f in fixes:
         print(f)
     print(f"\n  {len(fixes)} objecten verwerkt")
+
+    # =========================================================
+    # PASS 1b: Fix box pairs (kopje + content box alignment)
+    # =========================================================
+    print("\n=== PASS 1b: Box pairs rechttrekken ===\n")
+
+    box_fixes = []
+    # Target left/right for consistent box edges
+    TARGET_LEFT = 129
+    TARGET_RIGHT = 10170
+
+    for code in sorted(sections.keys()):
+        objects = sections[code]
+        label = section_label(code)
+        boxes = sorted(
+            [o for o in objects if o.object_type == "Box"],
+            key=lambda o: o.top,
+        )
+        if len(boxes) < 2:
+            continue
+
+        # Identify kopje box (top, usually B~298) and content box
+        if len(boxes) == 3:
+            # GH#1 pattern: 2 nested boxes at top + content below
+            # Use the outermost kopje box (largest height of top two)
+            top_two = boxes[:2]
+            kopje = max(top_two, key=lambda b: b.bottom - b.top)
+            inner = min(top_two, key=lambda b: b.bottom - b.top)
+            content = boxes[2]
+        elif len(boxes) == 2:
+            kopje, content = boxes[0], boxes[1]
+            inner = None
+            # Skip layered boxes (content starts above kopje bottom)
+            if content.top < kopje.top:
+                box_fixes.append(f"  {label:8s} SKIP layered boxes")
+                continue
+        else:
+            continue
+
+        # Fix content box top = kopje box bottom (no gap, no overlap)
+        gap = content.top - kopje.bottom
+        need_fix_top = gap != 0
+        need_fix_lr = (content.left != TARGET_LEFT
+                       or content.right != TARGET_RIGHT)
+        need_fix_kopje_lr = (kopje.left != TARGET_LEFT
+                             or kopje.right != TARGET_RIGHT)
+
+        # Determine effective right edge: try TARGET_RIGHT, but
+        # cross-section boxes can't have their right changed — in that
+        # case match the kopje to the content box's actual right.
+        effective_right = TARGET_RIGHT
+
+        if need_fix_top or need_fix_lr:
+            new_top = kopje.bottom
+            height = content.bottom - content.top
+            try:
+                rpt.move_object(
+                    content.handle,
+                    TARGET_LEFT, new_top,
+                    TARGET_RIGHT, new_top + height,
+                    section_code=code,
+                )
+                # Re-read actual coordinates (cross-section boxes
+                # may not accept right-edge changes)
+                actual = [
+                    o for o in rpt.get_objects_in_section(code)
+                    if o.handle == content.handle
+                ]
+                if actual and actual[0].right != TARGET_RIGHT:
+                    effective_right = actual[0].right
+                parts = []
+                if need_fix_top:
+                    parts.append(f"top {content.top}->{new_top} (gap {gap:+d})")
+                if need_fix_lr:
+                    if effective_right != TARGET_RIGHT:
+                        parts.append(
+                            f"L->{TARGET_LEFT} (R={effective_right} cross-sec)")
+                    else:
+                        parts.append(f"L/R->{TARGET_LEFT}/{TARGET_RIGHT}")
+                box_fixes.append(
+                    f"  {label:8s} {content.name:10s} {', '.join(parts)}"
+                )
+            except Exception as e:
+                box_fixes.append(f"  {label:8s} {content.name:10s} SKIP ({e})")
+
+        # Fix kopje box left/right — match the effective right edge
+        kopje_right = effective_right
+        need_fix_kopje_lr = (kopje.left != TARGET_LEFT
+                             or kopje.right != kopje_right)
+        if need_fix_kopje_lr:
+            try:
+                rpt.move_object(
+                    kopje.handle,
+                    TARGET_LEFT, kopje.top,
+                    kopje_right, kopje.bottom,
+                    section_code=code,
+                )
+                box_fixes.append(
+                    f"  {label:8s} {kopje.name:10s} L/R->{TARGET_LEFT}/{kopje_right}"
+                )
+            except Exception as e:
+                box_fixes.append(f"  {label:8s} {kopje.name:10s} SKIP ({e})")
+
+        # Fix inner nested box if present (GH#1)
+        if inner and (inner.left != TARGET_LEFT
+                      or inner.right != kopje_right):
+            try:
+                rpt.move_object(
+                    inner.handle,
+                    TARGET_LEFT, inner.top,
+                    kopje_right, inner.bottom,
+                    section_code=code,
+                )
+                box_fixes.append(
+                    f"  {label:8s} {inner.name:10s} L/R->{TARGET_LEFT}/{kopje_right}"
+                )
+            except Exception as e:
+                box_fixes.append(f"  {label:8s} {inner.name:10s} SKIP ({e})")
+
+    for f in box_fixes:
+        print(f)
+    print(f"\n  {len(box_fixes)} box-fixes verwerkt")
 
     # =========================================================
     # PASS 2: Kopjes -> Calibri 9

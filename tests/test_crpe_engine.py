@@ -180,6 +180,80 @@ class TestMoveObject:
                         obj.right, obj.bottom)
 
 
+class TestMoveBox:
+    def _first_box(self, job):
+        for obj in job.get_all_objects():
+            if obj.object_type == "Box":
+                return obj
+        pytest.skip("No Box objects found")
+
+    def test_move_box_horizontal(self, job):
+        obj = self._first_box(job)
+        orig_left, orig_right = obj.left, obj.right
+        job.move_object(obj.handle, obj.left + 100, obj.top,
+                        obj.right + 100, obj.bottom,
+                        section_code=obj.section_code)
+        objects = job.get_objects_in_section(obj.section_code)
+        moved = [o for o in objects if o.handle == obj.handle][0]
+        assert moved.left == orig_left + 100
+        assert moved.right == orig_right + 100
+        # Restore
+        job.move_object(obj.handle, orig_left, obj.top,
+                        orig_right, obj.bottom,
+                        section_code=obj.section_code)
+
+    def test_move_box_vertical(self, job):
+        obj = self._first_box(job)
+        orig_top, orig_bottom = obj.top, obj.bottom
+        job.move_object(obj.handle, obj.left, obj.top + 20,
+                        obj.right, obj.bottom + 20,
+                        section_code=obj.section_code)
+        objects = job.get_objects_in_section(obj.section_code)
+        moved = [o for o in objects if o.handle == obj.handle][0]
+        assert moved.top == orig_top + 20
+        assert moved.bottom == orig_bottom + 20
+        # Restore
+        job.move_object(obj.handle, obj.left, orig_top,
+                        obj.right, orig_bottom,
+                        section_code=obj.section_code)
+
+    def test_move_box_persists_after_save(self, job, tmp_path):
+        obj = self._first_box(job)
+        orig_left = obj.left
+        job.move_object(obj.handle, obj.left + 200, obj.top,
+                        obj.right + 200, obj.bottom,
+                        section_code=obj.section_code)
+        dest = tmp_path / "box_move_test.rpt"
+        job.save(dest)
+        assert dest.exists()
+        # Restore
+        job.move_object(obj.handle, orig_left, obj.top,
+                        obj.right, obj.bottom,
+                        section_code=obj.section_code)
+
+
+class TestMoveLine:
+    def _first_line(self, job):
+        for obj in job.get_all_objects():
+            if obj.object_type == "Line":
+                return obj
+        pytest.skip("No Line objects found")
+
+    def test_move_line(self, job):
+        obj = self._first_line(job)
+        orig_left = obj.left
+        job.move_object(obj.handle, obj.left + 100, obj.top,
+                        obj.right + 100, obj.bottom,
+                        section_code=obj.section_code)
+        objects = job.get_objects_in_section(obj.section_code)
+        moved = [o for o in objects if o.handle == obj.handle][0]
+        assert moved.left == orig_left + 100
+        # Restore
+        job.move_object(obj.handle, orig_left, obj.top,
+                        obj.right, obj.bottom,
+                        section_code=obj.section_code)
+
+
 class TestSetFieldFont:
     def _first_field(self, job):
         for obj in job.get_all_objects():
