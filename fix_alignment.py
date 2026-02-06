@@ -206,21 +206,32 @@ with CrystalReport(INPUT) as rpt:
             except Exception as e:
                 box_fixes.append(f"  {label:8s} {kopje.name:10s} SKIP ({e})")
 
-        # Fix inner nested box if present (GH#1)
-        if inner and (inner.left != TARGET_LEFT
-                      or inner.right != kopje_right):
-            try:
-                rpt.move_object(
-                    inner.handle,
-                    TARGET_LEFT, inner.top,
-                    kopje_right, inner.bottom,
-                    section_code=code,
-                )
-                box_fixes.append(
-                    f"  {label:8s} {inner.name:10s} L/R->{TARGET_LEFT}/{kopje_right}"
-                )
-            except Exception as e:
-                box_fixes.append(f"  {label:8s} {inner.name:10s} SKIP ({e})")
+        # Fix inner nested box if present (GH#1):
+        # Extend bottom to match outer kopje, so inner fills the
+        # entire header area and connects seamlessly with content.
+        if inner:
+            inner_target_bottom = kopje.bottom
+            need_inner_fix = (inner.left != TARGET_LEFT
+                              or inner.right != kopje_right
+                              or inner.bottom != inner_target_bottom)
+            if need_inner_fix:
+                try:
+                    rpt.move_object(
+                        inner.handle,
+                        TARGET_LEFT, inner.top,
+                        kopje_right, inner_target_bottom,
+                        section_code=code,
+                    )
+                    parts = [f"L/R->{TARGET_LEFT}/{kopje_right}"]
+                    if inner.bottom != inner_target_bottom:
+                        parts.append(
+                            f"B {inner.bottom}->{inner_target_bottom}")
+                    box_fixes.append(
+                        f"  {label:8s} {inner.name:10s} {', '.join(parts)}"
+                    )
+                except Exception as e:
+                    box_fixes.append(
+                        f"  {label:8s} {inner.name:10s} SKIP ({e})")
 
     for f in box_fixes:
         print(f)
