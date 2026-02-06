@@ -716,14 +716,13 @@ class CrpeJob:
         BoxObjectInfo (44 bytes) stores coordinates as:
           offset 4:  left
           offset 8:  top
+          offset 12: end_section_code + 65536  (same-section when == start + 65536)
           offset 16: left + right  (x-extent sum)
           offset 20: top + bottom  (y-extent sum, clamped to section height)
 
-        Cross-section boxes (spanning multiple sub-sections) have a
-        different encoding for offset 12/20.  For these boxes, only
-        left and top can be reliably changed; right and bottom are
-        preserved as-is because PEObjectInfo does not propagate x-sum
-        changes for cross-section boxes.
+        Cross-section boxes are converted to same-section by rewriting
+        offset 12 and temporarily increasing the section height so that
+        offset 20 is not clamped.
         """
         buf = (ctypes.c_byte * 44)()
         ctypes.cast(buf, ctypes.POINTER(ctypes.c_ushort))[0] = 44
@@ -736,20 +735,40 @@ class CrpeJob:
             off12 = _struct.unpack_from("<i", bytes(buf), 12)[0]
             is_cross = off12 != section_code + 65536
 
-        if is_cross:
-            # Cross-section: only left/top propagate to PEObjectInfo
+        if is_cross and section_code > 0:
+            # Convert cross-section to same-section:
+            # 1. Temporarily increase section height so T+B is not clamped
+            # 2. Rewrite offset 12 to same-section marker
+            # 3. Set all coordinates
+            # 4. Restore original section height
+            orig_height = ctypes.c_long(0)
+            self._dll.PEGetSectionHeight(
+                self._handle, section_code, ctypes.byref(orig_height),
+            )
+            needed = top + bottom
+            if needed > orig_height.value:
+                self._dll.PESetSectionHeight(
+                    self._handle, section_code, needed + 20,
+                )
             self._set_long_at(buf, 4, left)
             self._set_long_at(buf, 8, top)
-            # Keep offset 16 (x-sum) and 20 (cross-section bottom) unchanged
+            self._set_long_at(buf, 12, section_code + 65536)
+            self._set_long_at(buf, 16, left + right)
+            self._set_long_at(buf, 20, top + bottom)
+            ok = self._dll.PESetBoxObjectInfo(self._handle, handle, buf)
+            _check(self._dll, self._handle, ok, f"SetBoxObjectInfo({handle})")
+            # Restore section height
+            self._dll.PESetSectionHeight(
+                self._handle, section_code, orig_height.value,
+            )
         else:
             self._ensure_section_height(section_code, top + bottom)
             self._set_long_at(buf, 4, left)
             self._set_long_at(buf, 8, top)
             self._set_long_at(buf, 16, left + right)
             self._set_long_at(buf, 20, top + bottom)
-
-        ok = self._dll.PESetBoxObjectInfo(self._handle, handle, buf)
-        _check(self._dll, self._handle, ok, f"SetBoxObjectInfo({handle})")
+            ok = self._dll.PESetBoxObjectInfo(self._handle, handle, buf)
+            _check(self._dll, self._handle, ok, f"SetBoxObjectInfo({handle})")
 
     def _move_line(self, handle: int, left: int, top: int,
                    right: int, bottom: int, section_code: int) -> None:
