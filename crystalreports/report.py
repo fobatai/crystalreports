@@ -17,6 +17,7 @@ from .models import (
     FormulaInfo,
     ParameterInfo,
     ReportMetadata,
+    ReportObject,
     SectionInfo,
     SortFieldInfo,
     SubreportInfo,
@@ -179,6 +180,23 @@ class CrystalReport:
         self._require_sdk()
         return self._job.get_n_groups()
 
+    @property
+    def section_codes(self) -> list[int]:
+        """All valid section codes (area * 6000 + sub * 50)."""
+        self._require_sdk()
+        return self._job.get_section_codes()
+
+    @property
+    def objects(self) -> list[ReportObject]:
+        """All report layout objects across all sections."""
+        self._require_sdk()
+        return self._job.get_all_objects()
+
+    def get_objects_in_section(self, section_code: int) -> list[ReportObject]:
+        """Get report objects in a specific section."""
+        self._require_sdk()
+        return self._job.get_objects_in_section(section_code)
+
     # ------------------------------------------------------------------
     # Editing — OLE layer
     # ------------------------------------------------------------------
@@ -246,6 +264,77 @@ class CrystalReport:
         self._job.set_sql_query(sql)
 
     # ------------------------------------------------------------------
+    # Editing — CRPE layout modification
+    # ------------------------------------------------------------------
+
+    def move_object(self, handle: int, left: int, top: int,
+                    right: int, bottom: int) -> None:
+        """Move/resize a report object by setting its bounds (twips)."""
+        self._require_sdk()
+        self._job.move_object(handle, left, top, right, bottom)
+
+    def set_field_font(self, handle: int, face_name: str = "",
+                       point_size: int = 0, bold: Optional[bool] = None,
+                       italic: Optional[bool] = None,
+                       underline: Optional[bool] = None,
+                       strikeout: Optional[bool] = None) -> None:
+        """Change font for a Field object."""
+        self._require_sdk()
+        self._job.set_field_font(
+            handle, face_name, point_size, bold, italic, underline, strikeout,
+        )
+
+    def set_section_font(self, section_code: int, face_name: str = "",
+                         point_size: int = 0, bold: Optional[bool] = None,
+                         italic: Optional[bool] = None,
+                         scope: int = 1) -> None:
+        """Change font for all objects in a section.
+
+        Parameters
+        ----------
+        scope : int
+            1 = field objects, 2 = text objects, 3 = both.
+        """
+        self._require_sdk()
+        self._job.set_section_font(
+            section_code, face_name, point_size, bold, italic, scope,
+        )
+
+    def set_object_font_color(self, handle: int, color: int) -> None:
+        """Set font color (COLORREF ``0x00BBGGRR``).
+
+        Use :func:`crystalreports.crpe_engine.rgb_to_colorref` for convenience.
+        """
+        self._require_sdk()
+        self._job.set_object_font_color(handle, color)
+
+    def delete_object(self, handle: int) -> None:
+        """Delete a report object."""
+        self._require_sdk()
+        self._job.delete_object(handle)
+
+    def get_section_height(self, section_code: int) -> int:
+        """Get section height in twips."""
+        self._require_sdk()
+        return self._job.get_section_height(section_code)
+
+    def set_section_height(self, section_code: int, height: int) -> None:
+        """Set section height in twips."""
+        self._require_sdk()
+        self._job.set_section_height(section_code, height)
+
+    def get_margins(self) -> tuple[int, int, int, int]:
+        """Get page margins ``(left, right, top, bottom)`` in twips."""
+        self._require_sdk()
+        return self._job.get_margins()
+
+    def set_margins(self, left: int, right: int,
+                    top: int, bottom: int) -> None:
+        """Set page margins in twips."""
+        self._require_sdk()
+        self._job.set_margins(left, right, top, bottom)
+
+    # ------------------------------------------------------------------
     # Export
     # ------------------------------------------------------------------
 
@@ -270,18 +359,21 @@ class CrystalReport:
     # Save
     # ------------------------------------------------------------------
 
-    def save(self, output_path: Optional[Union[str, Path]] = None) -> None:
-        """Save modifications.
+    def save(self, output_path: Union[str, Path]) -> None:
+        """Save modifications to a **new** file.
 
-        If the CRPE engine is available, uses ``PESavePrintJob``.
-        Otherwise, copies the OLE file (metadata edits are written
-        directly by :meth:`set_metadata`).
+        The CRPE engine cannot overwrite the currently-open file,
+        so *output_path* must differ from the original.
+
+        Parameters
+        ----------
+        output_path : str or Path
+            Destination file path (must differ from the open file).
         """
-        dest = output_path or self._path
         if self.has_sdk:
-            self._job.save(dest)
+            self._job.save(output_path)
         else:
-            self._ole.save(dest)
+            self._ole.save(output_path)
 
     # ------------------------------------------------------------------
     # Convenience

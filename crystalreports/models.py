@@ -97,3 +97,16 @@ class SortFieldInfo:
     index: int = 0
     field_name: str = ""
     direction: str = "ascending"
+
+
+@dataclass
+class ReportObject:
+    """Information about an object on the report layout."""
+    handle: int = 0
+    name: str = ""
+    object_type: str = ""
+    section_code: int = 0
+    left: int = 0
+    top: int = 0
+    right: int = 0
+    bottom: int = 0

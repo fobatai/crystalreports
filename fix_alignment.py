@@ -1,0 +1,199 @@
+"""Fix alignment and set professional fonts in SafiPrint.rpt.
+
+Pass 1: Align objects that are slightly off within the same row.
+Pass 2: Kopjes (Text objects) -> Calibri 9
+Pass 3: Data (Field objects) -> Arial 8
+"""
+import shutil
+import os
+from collections import defaultdict, Counter
+from crystalreports import CrystalReport
+
+INPUT = "SafiPrint.rpt"
+OUTPUT = "SafiPrint_fixed.rpt"
+TEMP = "SafiPrint_temp_save.rpt"
+TOLERANCE = 20  # twips
+
+CONTAINER_TYPES = {"Box", "Line"}
+AREA_NAMES = {1: "RH", 2: "PH", 3: "GH", 4: "D",
+              5: "GF", 6: "RF", 7: "PF"}
+
+
+def section_label(code):
+    area = code // 6000
+    sub = (code - area * 6000) // 50
+    return f"{AREA_NAMES.get(area, '?')}#{sub}"
+
+
+fixes = []
+
+with CrystalReport(INPUT) as rpt:
+    # Group objects by section
+    sections = defaultdict(list)
+    for obj in rpt.objects:
+        sections[obj.section_code].append(obj)
+
+    # =========================================================
+    # PASS 1: Fix alignment
+    # =========================================================
+    print("=== PASS 1: Alignment fixes ===\n")
+
+    for code in sorted(sections.keys()):
+        objects = sections[code]
+        if len(objects) < 2:
+            continue
+
+        containers = [o for o in objects if o.object_type in CONTAINER_TYPES]
+        content = [o for o in objects if o.object_type not in CONTAINER_TYPES]
+
+        for group_name, group in [("container", containers), ("content", content)]:
+            if len(group) < 2:
+                continue
+
+            sorted_objs = sorted(group, key=lambda o: o.top)
+            rows = []
+            used = set()
+
+            for obj in sorted_objs:
+                if obj.handle in used:
+                    continue
+                row = [obj]
+                used.add(obj.handle)
+                for other in sorted_objs:
+                    if other.handle in used:
+                        continue
+                    if abs(other.top - obj.top) <= TOLERANCE:
+                        row.append(other)
+                        used.add(other.handle)
+                if len(row) > 1:
+                    rows.append(row)
+
+            for row in rows:
+                tops = [o.top for o in row]
+                if len(set(tops)) <= 1:
+                    continue
+
+                top_counts = Counter(tops)
+                target_top = top_counts.most_common(1)[0][0]
+                if top_counts.most_common(1)[0][1] == 1:
+                    target_top = round(sum(tops) / len(tops))
+
+                for obj in row:
+                    if obj.top != target_top:
+                        delta = target_top - obj.top
+                        new_bottom = obj.bottom + delta
+                        label = section_label(code)
+                        try:
+                            rpt.move_object(
+                                obj.handle,
+                                obj.left, target_top,
+                                obj.right, new_bottom,
+                            )
+                            fixes.append(
+                                f"  {label:8s} {obj.name:35s} "
+                                f"top {obj.top:5d} -> {target_top:5d} ({delta:+d})"
+                            )
+                        except Exception as e:
+                            fixes.append(
+                                f"  {label:8s} {obj.name:35s} "
+                                f"SKIP ({e})"
+                            )
+
+    for f in fixes:
+        print(f)
+    print(f"\n  {len(fixes)} objecten verwerkt")
+
+    # =========================================================
+    # PASS 2: Kopjes -> Calibri 9
+    # =========================================================
+    print("\n=== PASS 2: Kopjes -> Calibri 9 ===\n")
+
+    kopje_fixes = []
+    for code in sorted(sections.keys()):
+        objects = sections[code]
+        label = section_label(code)
+        texts = [o for o in objects if o.object_type == "Text"]
+        if not texts:
+            continue
+
+        # scope=2 sets ALL Text objects in the section
+        try:
+            rpt.set_section_font(
+                code, face_name="Calibri", point_size=9, scope=2,
+            )
+            names = [t.name for t in texts]
+            kopje_fixes.append(
+                f"  {label:8s} Calibri 9 -> {', '.join(names)}"
+            )
+        except Exception as e:
+            kopje_fixes.append(f"  {label:8s} SKIP ({e})")
+
+    for f in kopje_fixes:
+        print(f)
+    print(f"\n  {len(kopje_fixes)} secties verwerkt")
+
+    # =========================================================
+    # PASS 3: Data fields -> Arial 8
+    # =========================================================
+    print("\n=== PASS 3: Data fields -> Arial 8 ===\n")
+
+    field_fixes = []
+    for code in sorted(sections.keys()):
+        objects = sections[code]
+        label = section_label(code)
+        fields = [o for o in objects if o.object_type == "Field"]
+        if not fields:
+            continue
+
+        # scope=1 sets ALL Field objects in the section
+        try:
+            rpt.set_section_font(
+                code, face_name="Arial", point_size=8, scope=1,
+            )
+            names = [f.name for f in fields]
+            field_fixes.append(
+                f"  {label:8s} Arial 8  -> {', '.join(names)}"
+            )
+        except Exception as e:
+            field_fixes.append(f"  {label:8s} SKIP ({e})")
+
+    for f in field_fixes:
+        print(f)
+    print(f"\n  {len(field_fixes)} secties verwerkt")
+
+    # =========================================================
+    # PASS 4: Page Footer fields -> Arial 8 (individual fallback)
+    # =========================================================
+    # PESetFont(scope=1/2) fails on PF with error 572, so we
+    # use set_field_font per object instead.
+    print("\n=== PASS 4: Page Footer fields -> Arial 8 ===\n")
+
+    pf_fixes = []
+    pf_code = 42000
+    if pf_code in sections:
+        for obj in sections[pf_code]:
+            if obj.object_type == "Field":
+                try:
+                    rpt.set_field_font(obj.handle, face_name="Arial",
+                                       point_size=8)
+                    pf_fixes.append(f"  PF#0     Arial 8  -> {obj.name}")
+                except Exception as e:
+                    pf_fixes.append(f"  PF#0     {obj.name} SKIP ({e})")
+
+    for f in pf_fixes:
+        print(f)
+    print(f"\n  {len(pf_fixes)} objecten verwerkt")
+
+    # =========================================================
+    # Save
+    # =========================================================
+    print(f"\nSaving to {OUTPUT}...")
+    rpt.save(TEMP)
+    print("Done!")
+
+# Move temp to final output
+if os.path.exists(TEMP):
+    if os.path.exists(OUTPUT):
+        os.remove(OUTPUT)
+    os.rename(TEMP, OUTPUT)
+    print(f"Output: {OUTPUT} ({os.path.getsize(OUTPUT):,} bytes)")
