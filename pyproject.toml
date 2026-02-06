@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crystalreports"
+version = "0.1.0"
+description = "Python library for reading and modifying Crystal Reports .rpt files"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+    "olefile>=0.46",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["crystalreports*"]
